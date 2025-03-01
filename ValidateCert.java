@@ -1,8 +1,6 @@
 import java.io.*;
-import java.nio.file.*;
 import java.security.*;
 import java.security.cert.*;
-import java.util.Base64;
 
 public class ValidateCert {
     public static void main(String[] args) {
@@ -28,12 +26,7 @@ public class ValidateCert {
             if (format.equalsIgnoreCase("DER")) {
                 return (X509Certificate) cf.generateCertificate(inStream);
             } else if (format.equalsIgnoreCase("PEM")) {
-                String pemContent = new String(Files.readAllBytes(Paths.get(certFile)));
-                pemContent = pemContent.replaceAll("-----BEGIN CERTIFICATE-----", "")
-                                       .replaceAll("-----END CERTIFICATE-----", "")
-                                       .replaceAll("\\s", "");
-                byte[] decoded = Base64.getDecoder().decode(pemContent);
-                return (X509Certificate) cf.generateCertificate(new ByteArrayInputStream(decoded));
+                return (X509Certificate) cf.generateCertificate(inStream);
             } else {
                 throw new IllegalArgumentException("Unsupported format: " + format);
             }

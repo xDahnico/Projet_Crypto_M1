@@ -1,9 +1,28 @@
-import java.io.*;
+import java.io.FileInputStream;
+import java.io.InputStream;
 import java.math.BigInteger;
-import java.security.*;
-import java.security.cert.*;
+import java.security.InvalidKeyException;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.security.PublicKey;
+import java.security.Signature;
+import java.security.SignatureException;
+import java.security.cert.CertificateException;
+import java.security.cert.CertificateExpiredException;
+import java.security.cert.CertificateFactory;
+import java.security.cert.CertificateNotYetValidException;
+import java.security.cert.X509Certificate;
+import java.security.interfaces.ECPublicKey;
 import java.security.interfaces.RSAPublicKey;
+import java.security.spec.ECField;
+import java.security.spec.ECFieldFp;
 import java.util.Arrays;
+
+import org.bouncycastle.jce.ECNamedCurveTable;
+import org.bouncycastle.jce.spec.ECParameterSpec;
+import org.bouncycastle.math.ec.ECPoint;
+
+
 
 public class ValidateCert{
     public static void main(String[] args){
@@ -16,13 +35,6 @@ public class ValidateCert{
         String[] certFiles = Arrays.copyOfRange(args, 2, args.length);
 
         validateCertificateChain(format, certFiles);
-        /* 
-        try{
-            X509Certificate cert = loadCertificate(certFile, format);
-            validateCertificate(cert);
-        } catch(Exception e){
-            System.err.println("Error: " + e.getMessage());
-        }*/
     }
     
     private static X509Certificate loadCertificate(String certFile, String format) throws Exception{
@@ -79,26 +91,72 @@ public class ValidateCert{
         try{
             byte[] signature = cert.getSignature();
 
-            RSAPublicKey rsaPublicKey =(RSAPublicKey) publicKey;
+            RSAPublicKey rsaPublicKey =(RSAPublicKey) publicKey;  //Public key of the issuer
             BigInteger n = rsaPublicKey.getModulus();  
             BigInteger e = rsaPublicKey.getPublicExponent(); 
 
             BigInteger sigInt = new BigInteger(1, signature);
-            BigInteger decrypted = sigInt.modPow(e, n);
-            byte[] decryptedBytes = decrypted.toByteArray();
+            BigInteger decrypted = sigInt.modPow(e, n);  //Unsign the hash
+            byte[] decryptedBytes = decrypted.toByteArray();  //Convert to bytes
 
-            MessageDigest digest = MessageDigest.getInstance("SHA-256");
-            byte[] expectedHash = digest.digest(cert.getTBSCertificate());
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");  
+            byte[] expectedHash = digest.digest(cert.getTBSCertificate());  //Hash the certificates
 
-            if(Arrays.equals(decryptedBytes, expectedHash)){
+            if(Arrays.equals(decryptedBytes, expectedHash)){  //Verify that the hash obtained and the unsigned are equal
                 System.out.println("RSA Signature is valid.");
                 return true;
             } else{
                 System.err.println("RSA Signature verification failed.");
                 return false;
             }
-        } catch(Exception ex){
+        } 
+        catch(Exception ex){
             System.err.println("Error verifying RSA signature: " + ex.getMessage());
+            return false;
+        }
+    }
+
+        public static boolean verifyECDSASignature(X509Certificate cert, PublicKey publicKey) {
+        try {
+            if (!(publicKey instanceof ECPublicKey)) {
+                System.err.println("❌ Error: Public key is not an ECDSA key.");
+                return false;
+            }
+
+            ECPublicKey ecPublicKey = (ECPublicKey) publicKey;
+            ECParameterSpec ecSpec = ECNamedCurveTable.getParameterSpec(ecPublicKey.getParams().toString());
+            
+            ECField field = ecPublicKey.getParams().getCurve().getField();
+            BigInteger p = ((ECFieldFp) field).getP();
+            
+            ECPoint G = ecSpec.getG();
+            ECPoint Q = ((org.bouncycastle.jcajce.provider.asymmetric.ec.BCECPublicKey) ecPublicKey).getQ();
+            
+            byte[] signatureBytes = cert.getSignature();
+            int len = signatureBytes.length / 2;
+            BigInteger r = new BigInteger(1, Arrays.copyOfRange(signatureBytes, 0, len));
+            BigInteger s = new BigInteger(1, Arrays.copyOfRange(signatureBytes, len, signatureBytes.length));
+
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            byte[] certHash = digest.digest(cert.getTBSCertificate());
+            BigInteger e = new BigInteger(1, certHash);
+
+            BigInteger w = s.modInverse(p);
+            BigInteger u1 = e.multiply(w).mod(p);
+            BigInteger u2 = r.multiply(w).mod(p);
+            
+            ECPoint P = G.multiply(u1).add(Q.multiply(u2));
+            BigInteger x = P.getXCoord().toBigInteger();
+            
+            if (x.mod(p).equals(r.mod(p))) {
+                System.out.println("ECDSA Signature is valid.");
+                return true;
+            } else {
+                System.err.println("ECDSA Signature verification failed.");
+                return false;
+            }
+        } catch (Exception ex) {
+            System.err.println("Error verifying ECDSA signature: " + ex.getMessage());
             return false;
         }
     }
@@ -107,15 +165,18 @@ public class ValidateCert{
         /* 
             Check the certificate and verify with the issuer certificate
         */
-        try{    
+        try{   
+            System.out.println("   - Subject: " + subjectCert.getSubjectX500Principal());
+            System.out.println("   - Issuer: " + subjectCert.getIssuerX500Principal());
+
             subjectCert.checkValidity();  //Check validity period
             if(!subjectCert.getIssuerX500Principal().equals(issuerCert.getSubjectX500Principal())){  //Check subjectCert issuer == issuerCert subject 
                 System.err.println("Error: Issuer mismatch between " +
                         subjectCert.getIssuerX500Principal() + " and " + issuerCert.getSubjectX500Principal());
                 return false;
             }
-    
-            try{
+            System.out.println("Je suis ici");
+
                 PublicKey issuerPublicKey = issuerCert.getPublicKey();
                 
                 if(issuerPublicKey instanceof RSAPublicKey){  //Check isserCert public key is RSA
@@ -127,8 +188,17 @@ public class ValidateCert{
                         System.err.println("RSA Signature is valid.");
                     }
                 } 
+                else if (issuerPublicKey instanceof ECPublicKey) {  //Check if issuerCert public key is ECDSA
+                    if (!verifyECDSASignature(subjectCert, issuerPublicKey)) {  //Check ECDSA signature
+                        System.err.println("ECDSA Signature verification failed.");
+                        return false;
+                    } else {
+                        System.out.println("ECDSA Signature is valid.");
+                    }
+                }
+
                 else{  //If not RSA, check public key with other function
-                    System.err.println("Non RSA key");
+                    System.err.println("Non RSA or ECDSA key");
                     String signatureAlgorithm = subjectCert.getSigAlgName(); 
                     Signature signatureInstance = Signature.getInstance(signatureAlgorithm);
                     signatureInstance.initVerify(issuerPublicKey);
@@ -141,11 +211,12 @@ public class ValidateCert{
                     }
                     System.out.println("Signature verified successfully!");
                 }
-            } 
-            catch(Exception e){
-                System.err.println("Signature verification failed: " + e.getMessage());
-                return false;
-            }
+
+                if(!verifyKeyUsage(issuerCert.getKeyUsage())){  //Check if the issuer is allowed to sign certificate
+                    System.err.println("Issuer not allowed to sign certificate.");
+                    return false;
+                }
+
             System.out.println("Certificate validation successful.");
             return true;
         } 
@@ -155,9 +226,19 @@ public class ValidateCert{
         catch(CertificateNotYetValidException e){
             System.err.println("Certificate is not yet valid.");
         } 
-        catch(Exception e){
-            System.err.println("Error: " + e.getMessage());
-        }
+        catch(SignatureException e){
+            System.err.println("Signature error.");
+        } 
+        catch(NoSuchAlgorithmException e){
+            System.err.println("Algorithm is not valid.");
+        } 
+        catch(InvalidKeyException e){
+            System.err.println("Invalid key.");
+        } 
+        catch(CertificateEncodingException e){
+            System.err.println("Invalid key.");
+        } 
+        
         return false;
     }
     
@@ -167,6 +248,7 @@ public class ValidateCert{
           Check the root certificate
         */
         try{
+            System.out.println("\n Checking Root Certificate:");
             System.out.println("Subject: " + rootCert.getSubjectX500Principal()+"\n");
             System.out.println("Issuer: " + rootCert.getIssuerX500Principal()+"\n");
 
@@ -206,9 +288,17 @@ public class ValidateCert{
                 else{
                     System.err.println("RSA Signature is valid.");
                 }
-            } 
+            }
+            else if(rootPublicKey instanceof ECPublicKey){  // Check if issuerCert public key is ECDSA
+                if (!verifyECDSASignature(rootCert, rootPublicKey)){  // Check ECDSA signature
+                    System.err.println("ECDSA Signature verification failed.");
+                    return false;
+                } else {
+                    System.out.println("ECDSA Signature is valid.");
+                }
+            }
             else{  //If not RSA, check public key with other function
-                System.err.println("Non RSA key");
+                System.err.println("Non RSA or ECDSA key");
                 Signature signatureInstance = Signature.getInstance(signatureAlgorithm);
                 signatureInstance.initVerify(rootPublicKey); 
                 signatureInstance.update(rootCert.getTBSCertificate());
@@ -250,7 +340,7 @@ public class ValidateCert{
         try{
             X509Certificate[] certChain = new X509Certificate[certFiles.length];
     
-            for (int i = 0; i < certFiles.length; i++){
+            for (int i = 0; i < certFiles.length - 1; i++){
                 certChain[i] = loadCertificate(certFiles[i], format);
                 System.out.println("\nValidating Certificate: " + certChain[i].getSubjectX500Principal());
                 
@@ -260,69 +350,17 @@ public class ValidateCert{
                 }
             }
     
-            for (int i = 0; i < certChain.length - 1; i++) {
-                X509Certificate issuerCert = certChain[i];
-                X509Certificate subjectCert = certChain[i + 1];
-    
-                System.out.println("\n Checking Chain Link:");
-                System.out.println("   - Subject: " + subjectCert.getSubjectX500Principal());
-                System.out.println("   - Issuer: " + subjectCert.getIssuerX500Principal());
-    
-                PublicKey issuerPublicKey = certChain[i+1].getPublicKey();
-                if (issuerPublicKey instanceof RSAPublicKey) {
-                    if (!verifyRSASignature(subjectCert, issuerPublicKey)) {
-                        System.err.println("RSA Signature verification failed.");
-                        return false;
-                    }
-                    else{
-                        System.err.println("RSA Signature is valid.");
-                    }
-                } 
-                else{
-                    System.err.println("Non RSA key");
-                }
-    
-                if (!subjectCert.getIssuerX500Principal().equals(issuerCert.getSubjectX500Principal())) {
-                    System.err.println("Error: Issuer mismatch between " +
-                            subjectCert.getSubjectX500Principal() + " and " + issuerCert.getSubjectX500Principal());
-                    return false;
-                }
-            }
-    
             X509Certificate rootCert = certChain[certChain.length - 1];
-            System.out.println("\n Checking Root Certificate:");
-            System.out.println("   - Subject: " + rootCert.getSubjectX500Principal());
-            System.out.println("   - Issuer: " + rootCert.getIssuerX500Principal());
-    
             if(!validateRootCertificate(rootCert)){
                 System.out.println("\n Not a root certificate!");
                 return false;
             }
-            if (!rootCert.getSubjectX500Principal().equals(rootCert.getIssuerX500Principal())) {
-                System.err.println("Error: Issuer mismatch between " +
-                rootCert.getSubjectX500Principal() + " and " + rootCert.getIssuerX500Principal());
-                return false;
-            }
-    
-            PublicKey rootPublicKey = certChain[certChain.length - 1].getPublicKey();
-            if (rootPublicKey instanceof RSAPublicKey) {
-                if (!verifyRSASignature(rootCert, rootPublicKey)) {
-                    System.err.println("RSA Signature verification failed.");
-                    return false;
-                }
-                else{
-                    System.err.println("RSA Signature is valid.");
-                }
-            } 
-            else{
-                System.err.println("Non RSA key");
-            }
-    
+
             System.out.println("\n The certificate chain is valid!");
             return true;
-    
         } 
-        catch (Exception e) {
+
+        catch (Exception e){
             System.err.println(" Error: " + e.getMessage());
             return false;
         }

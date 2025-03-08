@@ -7,6 +7,7 @@ import java.security.NoSuchAlgorithmException;
 import java.security.PublicKey;
 import java.security.Signature;
 import java.security.SignatureException;
+import java.security.cert.CertificateEncodingException;
 import java.security.cert.CertificateException;
 import java.security.cert.CertificateExpiredException;
 import java.security.cert.CertificateFactory;
@@ -26,7 +27,7 @@ import org.bouncycastle.math.ec.ECPoint;
 
 public class ValidateCert{
     public static void main(String[] args){
-        if(args.length < 4 || !args[0].equalsIgnoreCase("-format") || !(args[1].equalsIgnoreCase("DER") || args[1].equalsIgnoreCase("PEM"))){
+        if(/*args.length < 4 || */!args[0].equalsIgnoreCase("-format") || !(args[1].equalsIgnoreCase("DER") || args[1].equalsIgnoreCase("PEM"))){
             System.out.println("Usage: validate-cert-chain -format DER|PEM <root_cert> <inter_cert> <leaf_cert>");
             return;
         }
@@ -34,7 +35,20 @@ public class ValidateCert{
         String format = args[1];
         String[] certFiles = Arrays.copyOfRange(args, 2, args.length);
 
-        validateCertificateChain(format, certFiles);
+
+        try {
+            X509Certificate cert = loadCertificate(certFiles[0], format);
+            X509Certificate issuercert = loadCertificate(certFiles[1], format);
+
+            validateCertificate(cert, issuercert);
+    
+        } 
+        catch (CertificateException  e) {
+            System.err.println("Error loading certificate: " + e.getMessage());
+        }catch (Exception e) {
+            System.err.println("An unexpected error occurred: " + e.getMessage());
+        }
+        //validateCertificateChain(format, certFiles);
     }
     
     private static X509Certificate loadCertificate(String certFile, String format) throws Exception{
@@ -105,8 +119,8 @@ public class ValidateCert{
             if(Arrays.equals(decryptedBytes, expectedHash)){  //Verify that the hash obtained and the unsigned are equal
                 System.out.println("RSA Signature is valid.");
                 return true;
-            } else{
-                System.err.println("RSA Signature verification failed.");
+            } 
+            else{
                 return false;
             }
         } 
@@ -167,7 +181,7 @@ public class ValidateCert{
         */
         try{   
             System.out.println("   - Subject: " + subjectCert.getSubjectX500Principal());
-            System.out.println("   - Issuer: " + subjectCert.getIssuerX500Principal());
+            System.out.println("   - Issuer: " + issuerCert.getSubjectX500Principal());
 
             subjectCert.checkValidity();  //Check validity period
             if(!subjectCert.getIssuerX500Principal().equals(issuerCert.getSubjectX500Principal())){  //Check subjectCert issuer == issuerCert subject 
@@ -175,10 +189,10 @@ public class ValidateCert{
                         subjectCert.getIssuerX500Principal() + " and " + issuerCert.getSubjectX500Principal());
                 return false;
             }
-            System.out.println("Je suis ici");
 
                 PublicKey issuerPublicKey = issuerCert.getPublicKey();
-                
+                System.out.println("   - Verifying with Public Key: " + issuerCert.getPublicKey());
+
                 if(issuerPublicKey instanceof RSAPublicKey){  //Check isserCert public key is RSA
                     if(!verifyRSASignature(subjectCert, issuerPublicKey)){  //Check RSA signature
                         System.err.println("RSA Signature verification failed.");
@@ -282,7 +296,7 @@ public class ValidateCert{
                 
             if(rootPublicKey instanceof RSAPublicKey){  //Check isserCert public key is RSA
                 if(!verifyRSASignature(rootCert, rootPublicKey)){  //Check RSA signature
-                    System.err.println("RSA Signature verification failed.");
+                    System.err.println("Root RSA Signature verification failed.");
                     return false;
                 }
                 else{
@@ -343,8 +357,8 @@ public class ValidateCert{
             for (int i = 0; i < certFiles.length - 1; i++){
                 certChain[i] = loadCertificate(certFiles[i], format);
                 System.out.println("\nValidating Certificate: " + certChain[i].getSubjectX500Principal());
-                
-                if (!validateCertificate(certChain[i], certChain[i+1])){
+
+                if (!validateCertificate(certChain[i], loadCertificate(certFiles[i+1], format))){
                     System.err.println("Invalid certificate detected: " + certFiles[i]);
                     return false;
                 }

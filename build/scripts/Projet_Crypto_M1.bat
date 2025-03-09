@@ -68,7 +68,7 @@ goto fail
 :execute
 @rem Setup the command line
 
-set CLASSPATH=%APP_HOME%\lib\Projet_Crypto_M1.jar;%APP_HOME%\lib\bcpkix-jdk18on-1.74.jar;%APP_HOME%\lib\bcutil-jdk18on-1.74.jar;%APP_HOME%\lib\bcprov-jdk18on-1.74.jar
+set CLASSPATH=%APP_HOME%\lib\Projet_Crypto_M1.jar;%APP_HOME%\lib\bcpkix-jdk15to18-1.70.jar;%APP_HOME%\lib\bcutil-jdk15to18-1.70.jar;%APP_HOME%\lib\bcprov-jdk15to18-1.70.jar
 
 
 @rem Execute Projet_Crypto_M1

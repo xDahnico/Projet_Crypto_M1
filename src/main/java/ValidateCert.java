@@ -1,6 +1,11 @@
+import java.io.ByteArrayInputStream;
+import java.io.File;
 import java.io.FileInputStream;
+import java.io.FileOutputStream;
+import java.io.IOException;
 import java.io.InputStream;
 import java.math.BigInteger;
+import java.net.URL;
 import java.security.InvalidKeyException;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
@@ -9,16 +14,29 @@ import java.security.Security;
 import java.security.cert.CertificateExpiredException;
 import java.security.cert.CertificateFactory;
 import java.security.cert.CertificateNotYetValidException;
+import java.security.cert.X509CRL;
+import java.security.cert.X509CRLEntry;
 import java.security.cert.X509Certificate;
 import java.security.interfaces.RSAPublicKey;
 import java.util.Arrays;
+import java.util.Date;
 
+import org.bouncycastle.asn1.ASN1InputStream;
 import org.bouncycastle.asn1.ASN1Integer;
+import org.bouncycastle.asn1.ASN1OctetString;
+import org.bouncycastle.asn1.ASN1Primitive;
 import org.bouncycastle.asn1.ASN1Sequence;
+import org.bouncycastle.asn1.x509.CRLDistPoint;
+import org.bouncycastle.asn1.x509.DistributionPoint;
+import org.bouncycastle.asn1.x509.DistributionPointName;
+import org.bouncycastle.asn1.x509.GeneralName;
+import org.bouncycastle.asn1.x509.GeneralNames;
 import org.bouncycastle.jce.interfaces.ECPublicKey;
 import org.bouncycastle.jce.provider.BouncyCastleProvider;
 import org.bouncycastle.jce.spec.ECParameterSpec;
 import org.bouncycastle.math.ec.ECPoint;
+
+
 
 
 public class ValidateCert{
@@ -45,13 +63,55 @@ public class ValidateCert{
 
     }
 
-    public static X509Certificate loadCertificate(String certPath, String format) throws Exception{
+    private static X509Certificate loadCertificate(String certPath, String format) throws Exception{
         CertificateFactory factory = CertificateFactory.getInstance("X.509");
         try (InputStream certInputStream = new FileInputStream(certPath)){
             return (X509Certificate) factory.generateCertificate(certInputStream);
         }
     }
 
+    private static boolean verifyBasicConstraints(X509Certificate cert, int certLevel){
+        try{
+            System.out.println("");
+            int basicConstraints = cert.getBasicConstraints();      
+            switch(certLevel){
+                    case -1:  //Root
+                    if(basicConstraints == 0){
+                        System.out.println("Root certificate is not a CA.");
+                        return false;
+                    }
+                    else{
+                        System.err.println("Root CA valid, path lenght: " + basicConstraints);
+                        return true;
+                    }
+
+                case 0:  //Leaf
+                    if(basicConstraints == -1){
+                        System.out.println("Leaf certificate is not a CA: " + basicConstraints);
+                        return true;
+                    }
+                    else{
+                        System.err.println("Error: Basic constraint: " + basicConstraints + " is not allowed for Leaf CA.");
+                        return false;
+                    }
+        
+                default:  //Intermediate
+                    if(basicConstraints < 0){
+                        System.out.println("Intermediate certificate is not a CA: " + basicConstraints);
+                        return false;
+                    }
+                    else{
+                        System.out.println("CA path lenght: " + basicConstraints);
+                        return true;
+                    }
+            } 
+        }
+        catch(Exception e){
+            System.err.println("Error verifying BasicConstraints: " + e.getMessage());
+            return false;
+        }
+    }
+    
     private static boolean verifyKeyUsage(boolean[] keyUsage, int certLevel){
         if (keyUsage == null){
             System.out.println("KeyUsage extension is absent.");
@@ -107,52 +167,10 @@ public class ValidateCert{
         }
         return isValid;
     }
-    private static boolean verifyBasicConstraints(X509Certificate cert, int certLevel){
-        try{
-            System.out.println("");
-            int basicConstraints = cert.getBasicConstraints();      
-            switch(certLevel){
-                    case -1:  //Root
-                    if(basicConstraints == 0){
-                        System.out.println("Root certificate is not a CA.");
-                        return false;
-                    }
-                    else{
-                        System.err.println("Root CA valid, path lenght: " + basicConstraints);
-                        return true;
-                    }
-
-                case 0:  //Leaf
-                    if(basicConstraints == -1){
-                        System.out.println("Leaf certificate is not a CA: " + basicConstraints);
-                        return true;
-                    }
-                    else{
-                        System.err.println("Error: Basic constraint: " + basicConstraints + " is not allowed for Leaf CA.");
-                        return false;
-                    }
-        
-                default:  //Intermediate
-                    if(basicConstraints < 0){
-                        System.out.println("Intermediate certificate is not a CA: " + basicConstraints);
-                        return false;
-                    }
-                    else{
-                        System.out.println("CA path lenght: " + basicConstraints);
-                        return true;
-                    }
-            } 
-        }
-        catch(Exception e){
-            System.err.println("Error verifying BasicConstraints: " + e.getMessage());
-            return false;
-        }
-    }
-
+    
     private static boolean verifyRSASignature(X509Certificate cert, PublicKey publicKey){
         try{
             byte[] signature = cert.getSignature();
-    
             RSAPublicKey rsaPublicKey = (RSAPublicKey) publicKey;
             BigInteger n = rsaPublicKey.getModulus();  // Modulus
             BigInteger e = rsaPublicKey.getPublicExponent(); // Exponent
@@ -187,7 +205,7 @@ public class ValidateCert{
         }
     }
       
-    public static boolean verifyECDSASignature(X509Certificate cert, PublicKey publicKey) throws Exception{
+    private static boolean verifyECDSASignature(X509Certificate cert, PublicKey publicKey) throws Exception{
         try{
             byte[] signatureBytes = cert.getSignature();
             ECPublicKey bcPublicKey = (ECPublicKey) publicKey;
@@ -225,7 +243,112 @@ public class ValidateCert{
         }
     }
     
-    public static boolean validateCertificate(X509Certificate subjectCert, X509Certificate issuerCert, int certLevel) throws NoSuchAlgorithmException, InvalidKeyException{
+    public static boolean isCertificateRevoked(X509Certificate cert) {
+        try {
+            // 1️⃣ Récupérer l'URL de la CRL
+            String crlUrl = getCRLDistributionPoint(cert);
+            if (crlUrl == null) {
+                System.err.println("❌ No CRL Distribution Point found.");
+                return false;
+            }
+            System.out.println("🔍 CRL URL: " + crlUrl);
+
+            // 2️⃣ Vérifier si la CRL locale existe et est à jour
+            String crlFileName = "CRL/" + crlUrl.substring(crlUrl.lastIndexOf('/') + 1);
+            File crlFile = new File(crlFileName);
+            if (!crlFile.exists() || isCRLExpired(crlFile)) {
+                System.out.println("⚠️ CRL is missing or outdated. Downloading...");
+                downloadCRL(crlUrl, crlFileName);
+            } else {
+                System.out.println("✅ Using local CRL: " + crlFileName);
+            }
+
+            // 3️⃣ Charger la CRL depuis le fichier
+            X509CRL crl = loadCRL(crlFile);
+            if (crl == null) {
+                System.err.println("❌ Failed to load CRL.");
+                return false;
+            }
+
+            // 4️⃣ Vérifier si le certificat est révoqué
+            BigInteger serialNumber = cert.getSerialNumber();
+            X509CRLEntry revokedEntry = crl.getRevokedCertificate(serialNumber);
+            if (revokedEntry != null) {
+                System.err.println("❌ Certificate is revoked! Serial: " + serialNumber);
+                return true;
+            } else {
+                System.out.println("✅ Certificate is NOT revoked.");
+                return false;
+            }
+
+        } catch (Exception e) {
+            System.err.println("Error checking certificate revocation: " + e.getMessage());
+            return false;
+        }
+    }
+
+    // ✅ Correction : Extraire l'URL du CRL Distribution Point
+    private static String getCRLDistributionPoint(X509Certificate cert) throws Exception {
+        byte[] crlDistributionPoints = cert.getExtensionValue(org.bouncycastle.asn1.x509.Extension.cRLDistributionPoints.getId());
+        if (crlDistributionPoints == null) return null;
+
+        ASN1InputStream asn1InputStream = new ASN1InputStream(new ByteArrayInputStream(((ASN1OctetString) ASN1Primitive.fromByteArray(crlDistributionPoints)).getOctets()));
+        ASN1Primitive derObject = asn1InputStream.readObject();
+        asn1InputStream.close();
+
+        CRLDistPoint distPoint = CRLDistPoint.getInstance(derObject);
+        if (distPoint == null) return null;
+
+        for (DistributionPoint dp : distPoint.getDistributionPoints()) {
+            DistributionPointName dpName = dp.getDistributionPoint();
+            if (dpName != null && dpName.getType() == DistributionPointName.FULL_NAME) {
+                GeneralNames names = GeneralNames.getInstance(dpName.getName());
+                for (GeneralName name : names.getNames()) {
+                    if (name.getTagNo() == GeneralName.uniformResourceIdentifier) {
+                        return name.getName().toString();
+                    }
+                }
+            }
+        }
+        return null;
+    }
+
+    // 📂 Vérifier si la CRL locale est expirée
+    private static boolean isCRLExpired(File crlFile) {
+        try {
+            X509CRL crl = loadCRL(crlFile);
+            if (crl == null) return true;
+            return crl.getNextUpdate().before(new Date());
+        } catch (Exception e) {
+            return true;
+        }
+    }
+
+    // 📥 Télécharger la CRL en ligne
+    private static void downloadCRL(String crlUrl, String savePath) throws IOException {
+        try (InputStream in = new URL(crlUrl).openStream();
+             FileOutputStream out = new FileOutputStream(savePath)) {
+            byte[] buffer = new byte[4096];
+            int bytesRead;
+            while ((bytesRead = in.read(buffer)) != -1) {
+                out.write(buffer, 0, bytesRead);
+            }
+            System.out.println("✅ CRL downloaded: " + savePath);
+        }
+    }
+
+    // 📄 Charger une CRL depuis un fichier
+    private static X509CRL loadCRL(File crlFile) {
+        try (InputStream in = new FileInputStream(crlFile)) {
+            CertificateFactory cf = CertificateFactory.getInstance("X.509");
+            return (X509CRL) cf.generateCRL(in);
+        } catch (Exception e) {
+            System.err.println("Error loading CRL: " + e.getMessage());
+            return null;
+        }
+    }
+
+    private static boolean validateCertificate(X509Certificate subjectCert, X509Certificate issuerCert, int certLevel) throws NoSuchAlgorithmException, InvalidKeyException{
         /* 
             Check the certificate and verify with the issuer certificate
         */
@@ -271,6 +394,10 @@ public class ValidateCert{
 
             subjectCert.checkValidity();
             System.out.println("\nCertificate is within valid date range.\n\tFrom: "+ subjectCert.getNotBefore()+ "\n\tUntil: " + subjectCert.getNotAfter()+"\n");
+
+            if(isCertificateRevoked(subjectCert)){
+                return false;
+            }
 
             System.out.println("Certificate validation successful.\n\n");
             return true;
@@ -340,6 +467,11 @@ public class ValidateCert{
 
             rootCert.checkValidity();
             System.out.println("\nCertificate is within valid date range.\n\tFrom: "+ rootCert.getNotBefore()+ "\n\tUntil: " + rootCert.getNotAfter()+"\n");
+            
+            if(isCertificateRevoked(rootCert)){
+                return false;
+            }
+
             System.out.println("Root certificate valid!\n");
 
             return true;

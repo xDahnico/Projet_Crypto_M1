@@ -72,7 +72,7 @@ set CLASSPATH=%APP_HOME%\lib\Projet_Crypto_M1.jar;%APP_HOME%\lib\bcpkix-jdk15to1
 
 
 @rem Execute Projet_Crypto_M1
-"%JAVA_EXE%" %DEFAULT_JVM_OPTS% %JAVA_OPTS% %PROJET_CRYPTO_M1_OPTS%  -classpath "%CLASSPATH%" ValidateCert %*
+"%JAVA_EXE%" %DEFAULT_JVM_OPTS% %JAVA_OPTS% %PROJET_CRYPTO_M1_OPTS%  -classpath "%CLASSPATH%" Main %*
 
 :end
 @rem End local scope for the variables with windows NT shell
